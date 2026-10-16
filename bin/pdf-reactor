@@ -2,7 +2,18 @@
 # Manage the local PDFreactor web service (Docker container "pdfreactor").
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+# Follows the symlink in the PATH by hand, older macOS has no 'readlink -f'
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" dir
+  while [[ -L "$source" ]]; do
+    dir="$(cd -P "$(dirname "$source")" && pwd)"
+    source="$(readlink "$source")"
+    [[ "$source" == /* ]] || source="$dir/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+ROOT="$(resolve_root)"
 COMPOSE_FILE="$ROOT/docker/docker-compose.yml"
 CONFIG_DIR="$ROOT/config"
 PROJECT="pdf-reactor"
@@ -86,7 +97,7 @@ cmd_restart() {
   wait_ready
 }
 
-# The web service reads pdfreactorwebservice.config, the license key and fonts only at startup,
+# The web service reads pdfreactorwebservice.config and the license key only at startup,
 # so a reload recreates the container. That also applies changes to docker-compose.yml.
 cmd_reload() {
   remove_foreign_container
@@ -147,7 +158,7 @@ Commands:
   start         start the container and wait until the service is ready
   stop          stop the container
   restart       restart the container (no config reload guarantee for compose changes)
-  reload        recreate the container to apply config, license key, fonts and compose changes
+  reload        recreate the container to apply config, license key and compose changes
   status        show container state and service status
   logs [-f]     show logs (extra args go to 'docker compose logs')
   shell         open a shell in the container
@@ -177,7 +188,7 @@ PDF options (paths relative to the project root):
 
 Paths:
   compose: $COMPOSE_FILE
-  config:  $CONFIG_DIR (licensekey.txt, pdfreactorwebservice.config, fonts/)
+  config:  $CONFIG_DIR (licensekey.txt, pdfreactorwebservice.config)
 
 Env: PDFREACTOR_PROJECT_ROOT (project for pdf commands), PDFREACTOR_PORT (default 9423), PDFREACTOR_WAIT (default 60s), PDFREACTOR_LOG_LINES (default 100)
 EOF
