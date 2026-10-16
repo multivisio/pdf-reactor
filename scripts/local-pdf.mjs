@@ -469,7 +469,7 @@ async function serveFile(pathname, response) {
   const filePath = normalize(join(root, decodedPath))
 
   if (!isServable(filePath)) {
-    console.warn(`Blocked request for ${decodedPath} (only .output, public, src, livingdocs and --public-base are served)`)
+    console.warn(`Blocked request for ${JSON.stringify(decodedPath)} (only .output, public, src, livingdocs and --public-base are served)`)
     response.writeHead(403)
     response.end('Forbidden')
     return
