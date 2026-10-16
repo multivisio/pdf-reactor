@@ -105,10 +105,10 @@ Der Befehl startet den PDFreactor-Container bei Bedarf selbst, führt `npm run b
 Liegt im Projekt ein ns.wow-Export (`public/json/routing_<lang>.json`), baut `pdf` das Dokument so nach, wie ns.wow es an PDFreactor schickt (Modus `export`):
 
 - `body.pdf` mit dem Publikationstitel aus `settings.json` (`publicationName`)
-- liegt `public/json/pdf_structure.json` vor, kommen Kapitel, Artikel, Reihenfolge, Kategorien und Livingdocs-IDs daraus, auch für Kapitel ohne Menüeintrag (Cover, Inhaltsverzeichnis, Impressum). Die Kapitelnavigation bekommen nur Kapitel, deren Name zu einem Menüeintrag passt. Sonst gilt:
-- je Eintrag in `menu.menuMain` ein `div.srl-chapter` (Klasse aus dem Label in der Standardsprache, z. B. `srl-business-report`), darin je Seite ein `div.srl-article srl-<seitenname>` in Menü-Reihenfolge
-- ein Menüeintrag auf eine Kategorieseite (z. B. `notes_group`) steht für alle Seiten dieser Kategorie, sortiert nach Name, mit der Klasse `srl-category-<kategorieseite>`
-- Seiten mit `excludeFromPdf` fehlen, am Anfang jedes Kapitels steht die Kapitelnavigation (Running Header)
+- Reihenfolge und Kapitel kommen aus den Dateinamen, nicht aus dem App-Menü: die Seiten aus `public/html/<lang>` numerisch sortiert (`01_02 …` vor `01_10 …`), je führender Nummer ein `div.srl-chapter` (`00`, `01`, …, `99`), darin je Seite ein `div.srl-article srl-<seitenname>`
+- es fehlen Seiten mit `excludeFromPdf`, Kategorie-Übersichtsseiten (z. B. `notes_group`) und leere Dateien. Seiten einer Kategorie bekommen die Klasse `srl-category-<kategorieseite>` (Zuordnung aus dem Routing)
+- ein Kapitel mit Kapitel-Cover heißt wie dessen Titel (z. B. `srl-business-report`) und bekommt am Anfang die Kapitelnavigation (Running Header), wie bei ns.wow
+- liegt `public/json/pdf_structure.json` vor, gelten Reihenfolge, Kapitelnamen und Livingdocs-IDs daraus (sonst: uuid aus dem Routing, Kapitel ohne Cover heißen `chapter-<nn>`)
 - `pdf.css` und `pdf.js` stehen inline im `<head>`, Bilder kommen aus `public/images`
 - auf das Seiten-HTML werden die PDF-Regeln angewendet wie in ns.wow: `data-remove-from-pdf="complete"` entfernt das Element, `"transient"` behält nur den Inhalt, `data-replace-tag` benennt es um, Links auf andere Seiten zeigen auf den Anker im Dokument. Die Attribute der anderen Ausgaben (`data-remove-from-web`, `-word`, `-xhtml`) bleiben stehen
 - das fertige Dokument wird nach `.output/pdf-reactor/document-<lang>.html` geschrieben, PDFreactor lädt genau diese Datei. Im Terminal steht, wie viele Elemente entfernt, entpackt und umbenannt wurden
