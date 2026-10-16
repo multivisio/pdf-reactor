@@ -320,7 +320,7 @@ async function resolveSourceDir(lang) {
 
 /*
   Rebuilds the document ns.wow sends to PDFreactor from the export in public/: publication
-  title, one div.srl-chapter per main menu entry and one div.srl-article per page, pdf.css and
+  title, one div.srl-chapter per chapter and one div.srl-article per page, pdf.css and
   pdf.js inline in the head like in the ns.wow export. The page HTML can be the raw export (all
   data-remove-from-* still in it) or the web version (data-remove-from-web already applied, so
   PDF-only components are missing). Either way the pdf rules are applied here.
@@ -337,7 +337,7 @@ async function buildExportHtml(lang, fontLink) {
       const body = existsSync(file) ? await fs.readFile(file, 'utf8') : ''
       const name = cssName(page.name)
       const categoryClasses = category ? `srl-category-${category} ns-category-${category}` : ''
-      const navigation = index === 0 && chapter.inMenu ? chapterNavigation(structure.chapters, chapter) : ''
+      const navigation = index === 0 && chapter.label ? chapterNavigation(structure.chapters, chapter) : ''
       return `<div class='srl-article ns-article srl-${name} ns-${name} ${categoryClasses}' id='${articleId({ page, id })}' lang='${escapeHtml(lang)}'>${navigation}${toPdfHtml(body, articleIds, stats)}</div>`
     }))
     return `<div class='srl-chapter ns-chapter srl-${chapter.slug} ns-${chapter.slug}' id='${chapterId(chapter)}'>${articles.join('')}</div>`
@@ -369,96 +369,71 @@ async function writeExportDocument(lang) {
 }
 
 /*
-  Chapters and their order come from menu.menuMain in routing_<lang>.json. The chapter class is
-  the slug of the label in the default language (ns.wow chapter names do not get translated).
-  A menu entry that points to a category page (notes_group) stands for all pages of that
-  category, sorted by name, and those articles get the class srl-category-<category page>.
+  Order and chapters come from the page names, not from the app menu: the files of the source dir
+  sorted by their numbers ("01_02 …" before "01_10 …"), one chapter per leading number (00, 01, …,
+  99). Left out: pages with excludeFromPdf, category overview pages and empty files. When
+  public/json/pdf_structure.json exists, it sets chapters, order and Livingdocs ids instead.
+  A chapter with a chapter cover is named after the cover title and gets the chapter navigation,
+  like in the ns.wow export.
 */
 async function readExportStructure(lang) {
   const settings = await readJson(join(root, 'public', 'json', 'settings.json'))
   const routing = await readJson(join(root, 'public', 'json', `routing_${lang}.json`))
-  const defaultLang = settings.defaultLanguage || lang
-  const defaultRouting = defaultLang === lang
-    ? routing
-    : await readJson(join(root, 'public', 'json', `routing_${defaultLang}.json`)).catch(() => routing)
-  const title = settings.publicationName?.[lang] || ''
-
-  const structureFile = join(root, 'public', 'json', 'pdf_structure.json')
-  if (existsSync(structureFile)) {
-    return { title, chapters: readStructureFile(await readJson(structureFile), routing, defaultRouting) }
-  }
-  const pages = new Map(routing.pages.map((page) => [page.uuid, page]))
-  const { categoryOf, categoryPages } = await resolveCategories(routing.pages, lang)
-  const placed = new Set()
-
-  const chapters = routing.menu.menuMain.map((entry, index) => {
-    const label = defaultRouting.menu.menuMain[index]?.label || entry.label
-    const articles = []
-
-    const addPage = (uuid) => {
-      const page = pages.get(uuid)
-      if (!page || page.excludeFromPdf || placed.has(uuid)) return
-      const members = routing.pages
-        .filter((member) => categoryOf.get(member.uuid) === page.name)
-        .sort((a, b) => a.name.localeCompare(b.name, 'en', { numeric: true }))
-
-      if (members.length > 0) {
-        for (const member of members) {
-          if (member.excludeFromPdf || placed.has(member.uuid)) continue
-          placed.add(member.uuid)
-          articles.push({ page: member, category: page.name })
-        }
-        placed.add(uuid)
-        return
-      }
-
-      placed.add(uuid)
-      articles.push({ page, category: categoryOf.get(uuid) })
-    }
-
-    const walk = (entries = []) => {
-      for (const child of entries) {
-        if (child.type === 'Article') addPage(child.page)
-        walk(child.submenuEntries)
-      }
-    }
-    walk(entry.submenuEntries)
-
-    return { slug: slugify(label), label: entry.label, inMenu: true, articles }
-  })
-
-  // Only pages with content count, category pages show their members instead
   const htmlDir = await resolveSourceDir(lang)
-  const unplaced = routing.pages.filter((page) => !page.excludeFromPdf && !page.component && !placed.has(page.uuid) &&
-    !categoryPages.has(page.name) && statSync(join(htmlDir, `${page.name}.html`), { throwIfNoEntry: false })?.size > 0)
-  if (unplaced.length > 0) {
-    console.warn(`Not in the main menu, left out of the PDF: ${unplaced.map((page) => page.name).join(', ')}`)
+  const pages = new Map(routing.pages.map((page) => [page.name, page]))
+  // Pages that are only in the PDF are not in the routing; uuid like the routing ones
+  const pageOf = (name, uuid) => pages.get(name) ?? { name, uuid: uuid ?? slugify(name) }
+  const structureFile = join(root, 'public', 'json', 'pdf_structure.json')
+  let chapters
+
+  if (existsSync(structureFile)) {
+    chapters = (await readJson(structureFile)).chapters.map((chapter) => ({
+      id: chapter.id,
+      slug: chapter.name,
+      articles: chapter.articles.map((article) => ({ page: pageOf(article.name, article.uuid), category: article.category, id: article.id }))
+    }))
+  } else {
+    const { categoryOf, categoryPages } = await resolveCategories(routing.pages, lang)
+    const names = (await fs.readdir(htmlDir))
+      .filter((file) => file.endsWith('.html') && statSync(join(htmlDir, file)).size > 0)
+      .map((file) => file.slice(0, -5))
+      .filter((name) => !categoryPages.has(name) && !pages.get(name)?.excludeFromPdf)
+      .sort((a, b) => a.localeCompare(b, 'en', { numeric: true }))
+    const byNumber = new Map()
+
+    for (const name of names) {
+      const number = /^\d+/.exec(name)?.[0]
+      if (!number) {
+        console.warn(`No leading number, left out of the PDF: ${name}`)
+        continue
+      }
+      if (!byNumber.has(number)) byNumber.set(number, { slug: `chapter-${number}`, articles: [] })
+      const page = pageOf(name)
+      byNumber.get(number).articles.push({ page, category: categoryOf.get(page.uuid) })
+    }
+    chapters = [...byNumber.values()]
+  }
+
+  for (const chapter of chapters) {
+    chapter.articles = chapter.articles.filter(({ page }) => !page.excludeFromPdf)
+    chapter.label = await chapterCoverTitle(htmlDir, chapter.articles)
+    if (chapter.label && !chapter.id) chapter.slug = slugify(chapter.label)
   }
 
   return {
-    title,
+    title: settings.publicationName?.[lang] || '',
     chapters: chapters.filter((chapter) => chapter.articles.length > 0)
   }
 }
 
-/*
-  pdf_structure.json holds the chapters and articles of the PDF with their Livingdocs ids, also
-  those that are not in the main menu (covers, TOC, imprint). A chapter whose name is the slug of
-  a menuMain label (default language) gets the label of the current language and the navigation.
-*/
-function readStructureFile(structure, routing, defaultRouting) {
-  const pages = new Map(routing.pages.map((page) => [page.name, page]))
-  const menuLabels = new Map(defaultRouting.menu.menuMain.map((entry, index) => [slugify(entry.label), routing.menu.menuMain[index]?.label || entry.label]))
-
-  return structure.chapters.map((chapter) => ({
-    id: chapter.id,
-    slug: chapter.name,
-    label: menuLabels.get(chapter.name) ?? chapter.name,
-    inMenu: menuLabels.has(chapter.name),
-    articles: chapter.articles
-      .map((article) => ({ page: pages.get(article.name) ?? { name: article.name, uuid: article.uuid }, category: article.category, id: article.id }))
-      .filter(({ page }) => !page.excludeFromPdf)
-  })).filter((chapter) => chapter.articles.length > 0)
+async function chapterCoverTitle(htmlDir, articles) {
+  for (const { page } of articles) {
+    const file = join(htmlDir, `${page.name}.html`)
+    if (!existsSync(file)) continue
+    const match = /class="srl-pdf-chapter-cover__title__text"[^>]*>([^<]*)</.exec(await fs.readFile(file, 'utf8'))
+    if (match) return decodeEntities(match[1]).trim()
+  }
+  return ''
 }
 
 /*
@@ -505,11 +480,11 @@ async function resolveCategories(routingPages, lang) {
 }
 
 /*
-  ns.wow puts the main menu as chapter navigation at the start of the first article of every
-  menu chapter, pdf.css makes it the running header with the current chapter highlighted
+  ns.wow lists the chapters with a chapter cover as chapter navigation at the start of their first
+  article, pdf.css makes it the running header with the current chapter highlighted
 */
 function chapterNavigation(chapters, current) {
-  const items = chapters.filter((chapter) => chapter.inMenu).map((chapter) => {
+  const items = chapters.filter((chapter) => chapter.label).map((chapter) => {
     const currentClasses = chapter === current ? ' srl-chapter-navigation__list-item--current lc-chapter-navigation__list-item--current' : ''
     return `<li class='lc-chapter-navigation__list-item srl-chapter-navigation__list-item${currentClasses}'><a href='#${chapterId(chapter)}'>${escapeHtml(chapter.label)}</a></li>`
   })
