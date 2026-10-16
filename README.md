@@ -96,7 +96,7 @@ Der Befehl startet den PDFreactor-Container bei Bedarf selbst, führt `npm run b
 | Befehl | Ergebnis |
 |---|---|
 | `pdf-reactor pdf` | ganzer Bericht → `.output/pdf-reactor/report.pdf` |
-| `pdf-reactor watch` | wie `pdf`, rendert bei Änderungen in `src/`, `livingdocs/` und `public/pdf/` (Modus `export`: `public/html/`, `public/json/`) neu. Das aktuelle PDF liegt unter <http://127.0.0.1:4175/latest.pdf> |
+| `pdf-reactor watch` | wie `pdf`, rendert bei Änderungen in `src/` und `livingdocs/` neu, dazu im Modus `export` `public/html/` und `public/json/`, im Modus `content` der Quellordner. Solange es läuft, sind das Dokument und das aktuelle PDF (<http://localhost:4175/latest.pdf>) im Browser erreichbar, auch unter Windows aus WSL heraus. Mit `--mode components` für die Komponenten-Übersicht |
 | `pdf-reactor components` | alle Livingdocs-Komponenten, je eine pro Seite → `.output/pdf-reactor/components.pdf` |
 | `pdf-reactor file <pfad>` | eine einzelne HTML-Datei → `.output/pdf-reactor/generated.pdf` |
 
@@ -200,5 +200,6 @@ Schriften kommen ausschließlich aus dem jeweiligen Projekt. `build-pdf` legt si
 - **macOS fragt, ob `node` eingehende Verbindungen annehmen darf:** erlauben. PDFreactor im Container holt das Dokument über diesen Port vom lokalen Server.
 - **PDFreactor erreicht den lokalen Server nicht:** Unter WSL ist ein neu geöffneter Port kurz nicht erreichbar, das Tool versucht es deshalb bis zu fünfmal. Hilft das nicht, Firewall und `--document-host` prüfen.
 - **Bilder oder Styles fehlen, im Terminal steht „Blocked request for …“:** Der lokale Server liefert nur Dateien aus `.output`, `public`, `src`, `livingdocs` und dem Ordner von `--public-base` aus, damit der Rest des Projekts (z. B. `.env`, `.git`) im Netzwerk nicht abrufbar ist. Assets dort ablegen oder `--public-base` anpassen.
+- **Die Adresse mit `host.docker.internal` lässt sich im Browser nicht öffnen:** Unter diesem Namen erreicht nur PDFreactor im Container den lokalen Server. Im Browser `localhost` verwenden, und zwar mit `watch`, denn bei `pdf`, `components` und `file` läuft der Server nur während des Renderns.
 - **PDF sieht falsch aus:** `.output/pdf-reactor/document-<lang>.html` (Modus `export`) bzw. `last-wrapper.html` enthält das HTML, das an PDFreactor ging. Ist die Antwort kein PDF, liegt sie in `.output/pdf-reactor/last-pdfreactor-response.bin`. Zusätzlich `pdf-reactor logs` ansehen.
 - **Warnung „removing container 'pdfreactor' from other setup“:** Ein Container gleichen Namens aus einer anderen Installation wurde entfernt. Das ist gewollt.

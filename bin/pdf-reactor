@@ -169,7 +169,8 @@ Commands:
 
 PDF commands (run inside an srl project, starts the service if needed):
   pdf [options]         build-pdf, then render the report to .output/pdf-reactor/report.pdf
-  watch [options]       like pdf, re-renders on changes (latest PDF at http://127.0.0.1:4175/latest.pdf)
+  watch [options]       like pdf, re-renders on changes and keeps the server up
+                        (document and http://localhost:4175/latest.pdf open in the browser)
   components [options]  render all livingdocs components to .output/pdf-reactor/components.pdf
   file <path> [options] render a single HTML file to .output/pdf-reactor/generated.pdf
 
