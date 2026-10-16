@@ -1,11 +1,11 @@
 import { createServer, request as httpRequest } from 'node:http'
-import { createReadStream, existsSync, promises as fs } from 'node:fs'
+import { createReadStream, existsSync, promises as fs, statSync } from 'node:fs'
 import { watch } from 'node:fs'
 import { dirname, extname, join, normalize, relative, resolve, sep } from 'node:path'
 import { spawn } from 'node:child_process'
 
 const root = findProjectRoot()
-const outputDir = join(root, '.output', 'local-pdf')
+const outputDir = join(root, '.output', 'pdf-reactor')
 const fontStylesheetPath = '/.output/fonts/style.css'
 // npm_execpath points to the package manager's JS entry (e.g. npm-cli.js), so run it through node
 const packageManager = process.env.npm_execpath
@@ -14,7 +14,7 @@ const packageManager = process.env.npm_execpath
 
 const options = parseArgs(process.argv.slice(2))
 
-console.log(`Project ${root}`)
+console.log(`Project ${root} (${options.mode} mode)`)
 
 let server
 let running = false
@@ -47,10 +47,14 @@ async function runOnce() {
     await fs.mkdir(outputDir, { recursive: true })
 
     const port = await ensureServer()
-    const documentUrl = `http://${options.documentHost}:${port}/__local-pdf.html?lang=${encodeURIComponent(options.lang)}`
-    const localDocumentUrl = `http://127.0.0.1:${port}/__local-pdf.html?lang=${encodeURIComponent(options.lang)}`
+    const documentPath = options.mode === 'export'
+      ? await writeExportDocument(options.lang)
+      : `/__local-pdf.html?lang=${encodeURIComponent(options.lang)}`
+    const documentUrl = `http://${options.documentHost}:${port}${documentPath}`
 
-    await preflightDocument(localDocumentUrl)
+    if (options.mode !== 'export') {
+      await preflightDocument(`http://127.0.0.1:${port}${documentPath}`)
+    }
 
     console.log(`Rendering ${documentUrl}`)
     const pdf = await renderPdf(documentUrl)
@@ -252,6 +256,10 @@ async function buildHtml(lang) {
     return buildSingleFileHtml(fontLink)
   }
 
+  if (options.mode === 'export') {
+    return buildExportHtml(lang, fontLink)
+  }
+
   const content = options.mode === 'components'
     ? await buildComponentGallery()
     : await buildContentArticles(lang)
@@ -302,6 +310,315 @@ async function resolveSourceDir(lang) {
   }
 
   throw new Error(`Could not find PDF HTML source directory. Checked ${relative(root, configured)} and ${relative(root, fallback)}`)
+}
+
+/*
+  Rebuilds the document ns.wow sends to PDFreactor from the export in public/: publication
+  title, one div.srl-chapter per main menu entry and one div.srl-article per page, pdf.css and
+  pdf.js inline in the head like in the ns.wow export. The page HTML can be the raw export (all
+  data-remove-from-* still in it) or the web version (data-remove-from-web already applied, so
+  PDF-only components are missing). Either way the pdf rules are applied here.
+*/
+async function buildExportHtml(lang, fontLink) {
+  const structure = await readExportStructure(lang)
+  const htmlDir = await resolveSourceDir(lang)
+  const articleIds = new Map(structure.chapters.flatMap((chapter) => chapter.articles).map((article) => [article.page.uuid, articleId(article)]))
+  const stats = { complete: 0, transient: 0, replaced: 0, pdfOnly: 0 }
+
+  const chapters = await Promise.all(structure.chapters.map(async (chapter) => {
+    const articles = await Promise.all(chapter.articles.map(async ({ page, category, id }, index) => {
+      const file = join(htmlDir, `${page.name}.html`)
+      const body = existsSync(file) ? await fs.readFile(file, 'utf8') : ''
+      const name = cssName(page.name)
+      const categoryClasses = category ? `srl-category-${category} ns-category-${category}` : ''
+      const navigation = index === 0 && chapter.inMenu ? chapterNavigation(structure.chapters, chapter) : ''
+      return `<div class='srl-article ns-article srl-${name} ns-${name} ${categoryClasses}' id='${articleId({ page, id })}' lang='${escapeHtml(lang)}'>${navigation}${toPdfHtml(body, articleIds, stats)}</div>`
+    }))
+    return `<div class='srl-chapter ns-chapter srl-${chapter.slug} ns-${chapter.slug}' id='${chapterId(chapter)}'>${articles.join('')}</div>`
+  }))
+
+  console.log(`PDF rules: ${stats.complete} elements removed, ${stats.transient} unwrapped, ${stats.replaced} tags replaced`)
+  if (stats.pdfOnly === 0) {
+    console.warn(`No data-remove-from-web in ${relative(root, htmlDir)}: this is the web export, PDF-only components are missing`)
+  }
+
+  const [css, js] = await Promise.all([
+    fs.readFile(join(root, '.output', 'pdf', 'pdf.css'), 'utf8'),
+    fs.readFile(join(root, '.output', 'pdf', 'pdf.js'), 'utf8')
+  ])
+
+  // No doctype and the script in the head, like the ns.wow export
+  return `<html lang="${escapeHtml(lang)}"><head><meta charset="UTF-8" /><base href="/public/">${fontLink}<style>${css}</style><script>${js}</script><title>${escapeHtml(structure.title)}</title></head><body class="pdf"><p class='srl-pdf-publication-title lc-pdf-publication-title'><span class='srl-pdf-publication-title__text lc-pdf-publication-title__text'>${escapeHtml(structure.title)}</span></p>${chapters.join('')}</body></html>`
+}
+
+/*
+  Export mode writes the finished document (pdf rules applied) to .output/pdf-reactor and
+  PDFreactor loads that file, so the HTML that went into the PDF stays next to it
+*/
+async function writeExportDocument(lang) {
+  const file = join(outputDir, `document-${lang}.html`)
+  await fs.writeFile(file, await buildExportHtml(lang, fontStylesheetLink()))
+  console.log(`Wrote ${relative(root, file)}`)
+  return `/${toUrlPath(relative(root, file))}`
+}
+
+/*
+  Chapters and their order come from menu.menuMain in routing_<lang>.json. The chapter class is
+  the slug of the label in the default language (ns.wow chapter names do not get translated).
+  A menu entry that points to a category page (notes_group) stands for all pages of that
+  category, sorted by name, and those articles get the class srl-category-<category page>.
+*/
+async function readExportStructure(lang) {
+  const settings = await readJson(join(root, 'public', 'json', 'settings.json'))
+  const routing = await readJson(join(root, 'public', 'json', `routing_${lang}.json`))
+  const defaultLang = settings.defaultLanguage || lang
+  const defaultRouting = defaultLang === lang
+    ? routing
+    : await readJson(join(root, 'public', 'json', `routing_${defaultLang}.json`)).catch(() => routing)
+  const title = settings.publicationName?.[lang] || ''
+
+  const structureFile = join(root, 'public', 'json', 'pdf_structure.json')
+  if (existsSync(structureFile)) {
+    return { title, chapters: readStructureFile(await readJson(structureFile), routing, defaultRouting) }
+  }
+  const pages = new Map(routing.pages.map((page) => [page.uuid, page]))
+  const { categoryOf, categoryPages } = await resolveCategories(routing.pages, lang)
+  const placed = new Set()
+
+  const chapters = routing.menu.menuMain.map((entry, index) => {
+    const label = defaultRouting.menu.menuMain[index]?.label || entry.label
+    const articles = []
+
+    const addPage = (uuid) => {
+      const page = pages.get(uuid)
+      if (!page || page.excludeFromPdf || placed.has(uuid)) return
+      const members = routing.pages
+        .filter((member) => categoryOf.get(member.uuid) === page.name)
+        .sort((a, b) => a.name.localeCompare(b.name, 'en', { numeric: true }))
+
+      if (members.length > 0) {
+        for (const member of members) {
+          if (member.excludeFromPdf || placed.has(member.uuid)) continue
+          placed.add(member.uuid)
+          articles.push({ page: member, category: page.name })
+        }
+        placed.add(uuid)
+        return
+      }
+
+      placed.add(uuid)
+      articles.push({ page, category: categoryOf.get(uuid) })
+    }
+
+    const walk = (entries = []) => {
+      for (const child of entries) {
+        if (child.type === 'Article') addPage(child.page)
+        walk(child.submenuEntries)
+      }
+    }
+    walk(entry.submenuEntries)
+
+    return { slug: slugify(label), label: entry.label, inMenu: true, articles }
+  })
+
+  // Only pages with content count, category pages show their members instead
+  const htmlDir = await resolveSourceDir(lang)
+  const unplaced = routing.pages.filter((page) => !page.excludeFromPdf && !page.component && !placed.has(page.uuid) &&
+    !categoryPages.has(page.name) && statSync(join(htmlDir, `${page.name}.html`), { throwIfNoEntry: false })?.size > 0)
+  if (unplaced.length > 0) {
+    console.warn(`Not in the main menu, left out of the PDF: ${unplaced.map((page) => page.name).join(', ')}`)
+  }
+
+  return {
+    title,
+    chapters: chapters.filter((chapter) => chapter.articles.length > 0)
+  }
+}
+
+/*
+  pdf_structure.json holds the chapters and articles of the PDF with their Livingdocs ids, also
+  those that are not in the main menu (covers, TOC, imprint). A chapter whose name is the slug of
+  a menuMain label (default language) gets the label of the current language and the navigation.
+*/
+function readStructureFile(structure, routing, defaultRouting) {
+  const pages = new Map(routing.pages.map((page) => [page.name, page]))
+  const menuLabels = new Map(defaultRouting.menu.menuMain.map((entry, index) => [slugify(entry.label), routing.menu.menuMain[index]?.label || entry.label]))
+
+  return structure.chapters.map((chapter) => ({
+    id: chapter.id,
+    slug: chapter.name,
+    label: menuLabels.get(chapter.name) ?? chapter.name,
+    inMenu: menuLabels.has(chapter.name),
+    articles: chapter.articles
+      .map((article) => ({ page: pages.get(article.name) ?? { name: article.name, uuid: article.uuid }, category: article.category, id: article.id }))
+      .filter(({ page }) => !page.excludeFromPdf)
+  })).filter((chapter) => chapter.articles.length > 0)
+}
+
+/*
+  routing_<lang>.json only has category ids (categories.references[].id), not which page shows
+  the category. A category page lists its members as accordions (srl-category-accordion__head-text),
+  so each id goes to the category page whose accordion titles match most of its members.
+*/
+async function resolveCategories(routingPages, lang) {
+  const htmlDir = await resolveSourceDir(lang)
+  const membersById = new Map()
+
+  for (const page of routingPages) {
+    for (const { id } of page.categories?.references ?? []) {
+      if (!membersById.has(id)) membersById.set(id, [])
+      membersById.get(id).push(page)
+    }
+  }
+
+  const categoryPages = []
+  for (const page of routingPages) {
+    const file = join(htmlDir, `${page.name}.html`)
+    if (page.categories || !existsSync(file)) continue
+    const html = await fs.readFile(file, 'utf8')
+    if (!html.includes('srl-category-accordion--category')) continue
+    const titles = new Set([...html.matchAll(/srl-category-accordion__head-text">([^<]*)</g)].map((match) => decodeEntities(match[1]).trim()))
+    categoryPages.push({ name: page.name, titles })
+  }
+
+  const categoryOf = new Map()
+  for (const [id, members] of membersById) {
+    const best = categoryPages
+      .map((categoryPage) => ({ name: categoryPage.name, score: members.filter((member) => categoryPage.titles.has(member.translatedTitle)).length }))
+      .sort((a, b) => b.score - a.score)[0]
+
+    if (!best || (best.score === 0 && categoryPages.length > 1)) {
+      console.warn(`Could not find the page of category ${id}, its pages are placed like normal pages`)
+      continue
+    }
+
+    for (const member of members) categoryOf.set(member.uuid, best.name)
+  }
+
+  return { categoryOf, categoryPages: new Set(categoryPages.map((categoryPage) => categoryPage.name)) }
+}
+
+/*
+  ns.wow puts the main menu as chapter navigation at the start of the first article of every
+  menu chapter, pdf.css makes it the running header with the current chapter highlighted
+*/
+function chapterNavigation(chapters, current) {
+  const items = chapters.filter((chapter) => chapter.inMenu).map((chapter) => {
+    const currentClasses = chapter === current ? ' srl-chapter-navigation__list-item--current lc-chapter-navigation__list-item--current' : ''
+    return `<li class='lc-chapter-navigation__list-item srl-chapter-navigation__list-item${currentClasses}'><a href='#${chapterId(chapter)}'>${escapeHtml(chapter.label)}</a></li>`
+  })
+  return `<div class='srl-chapter-navigation lc-chapter-navigation'><ol class='srl-chapter-navigation__list lc-chapter-navigation__list'>${items.join('')}</ol></div>`
+}
+
+// Livingdocs ids come from pdf_structure.json, without it the routing uuid / chapter slug takes their place
+function articleId({ page, id }) {
+  return `srl-article-id-${id ?? page.uuid}`
+}
+
+function chapterId(chapter) {
+  return `srl-chapter-id-${chapter.id ?? chapter.slug}`
+}
+
+// "05_06_14 Property, Plant and Equipment" -> "05_06_14_property_plant_and_equipment"
+function cssName(name) {
+  return name.toLowerCase().replaceAll(' ', '_').replace(/[^\w-]/g, '')
+}
+
+function slugify(label) {
+  return label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+}
+
+/*
+  Applies what ns.wow does for the PDF: data-remove-from-pdf="complete" drops the element,
+  "transient" keeps only its children, data-replace-tag renames the element. The attributes
+  for the other outputs (data-remove-from-web, -word, -xhtml) stay, like in the ns.wow export.
+  Links to other pages (data-article-name) point to the anchor or the article in the document,
+  and loading="lazy" goes away, so the result matches the ns.wow export byte for byte except
+  for image URLs. Tags without these attributes are copied unchanged.
+*/
+function toPdfHtml(html, articleIds, stats) {
+  const voidTags = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr'])
+  const token = /<!--[\s\S]*?-->|<(\/?)([a-zA-Z][\w:-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>|[^<]+|</g
+  const output = []
+  const stack = []
+  let skipDepth = 0
+
+  for (const match of html.matchAll(token)) {
+    const [text, closing, rawTag, attributes] = match
+
+    if (!rawTag) {
+      if (!skipDepth) output.push(text)
+      continue
+    }
+
+    const tag = rawTag.toLowerCase()
+
+    if (closing) {
+      const index = stack.findLastIndex((entry) => entry.tag === tag)
+      if (index === -1) {
+        if (!skipDepth) output.push(text)
+        continue
+      }
+      // Unclosed elements above the match close with it
+      const closed = stack.splice(index)
+      skipDepth -= closed.filter((entry) => entry.mode === 'complete').length
+      if (!skipDepth && closed[0].mode === 'keep') output.push(`</${closed[0].outputTag}>`)
+      continue
+    }
+
+    const selfClosing = voidTags.has(tag) || /\/\s*$/.test(attributes)
+    const mode = skipDepth ? 'inner' : /\sdata-remove-from-pdf="(complete|transient)"/.exec(attributes)?.[1] ?? 'keep'
+    const replaceTag = /\sdata-replace-tag="([\w-]+)"/.exec(attributes)?.[1]
+
+    if (mode === 'complete' || mode === 'transient') stats[mode] += 1
+    if (mode === 'keep' && replaceTag) stats.replaced += 1
+    if (mode === 'keep' && attributes.includes(' data-remove-from-web="')) stats.pdfOnly += 1
+
+    if (!selfClosing) stack.push({ tag, mode, outputTag: replaceTag || rawTag })
+    if (mode === 'complete' && !selfClosing) skipDepth += 1
+    if (mode !== 'keep') continue
+
+    output.push(rewriteTag(text, rawTag, attributes, replaceTag, articleIds))
+  }
+
+  return output.join('')
+}
+
+function rewriteTag(text, rawTag, attributes, replaceTag, articleIds) {
+  if (!replaceTag && !attributes.includes(' loading="lazy"') && !attributes.includes(' data-article-name="')) {
+    return text
+  }
+
+  let rewritten = attributes
+    .replace(/\sdata-replace-tag="[\w-]+"/, '')
+    .replace(' loading="lazy"', '')
+
+  const articleName = /\sdata-article-name="([^"]*)"/.exec(rewritten)?.[1]
+  if (articleName !== undefined) {
+    const [uuid, anchor] = decodeEntities(articleName).split('#')
+    const target = anchor || articleIds.get(uuid)
+    rewritten = rewritten.replace(/\sdata-article-name="[^"]*"/, '').replace(/\sdata-note-target="[^"]*"/, '')
+    if (target) {
+      rewritten = rewritten.replace(/\shref="[^"]*"/, ` href="#${escapeHtml(target)}"`)
+    } else {
+      console.warn(`Link target ${articleName} is not part of the PDF`)
+    }
+  }
+
+  return `<${replaceTag || rawTag}${rewritten}>`
+}
+
+function decodeEntities(value) {
+  return value
+    .replaceAll('&quot;', '"')
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&nbsp;', ' ')
+    .replaceAll('&amp;', '&')
+}
+
+async function readJson(path) {
+  return JSON.parse(await fs.readFile(path, 'utf8'))
 }
 
 async function buildSingleFileHtml(fontLink) {
@@ -549,6 +866,15 @@ function watchPaths() {
     ]
   }
 
+  if (options.mode === 'export') {
+    return [
+      join(root, 'src'),
+      join(root, 'livingdocs'),
+      join(root, 'public', 'html'),
+      join(root, 'public', 'json')
+    ]
+  }
+
   return [
     join(root, 'src'),
     join(root, 'livingdocs'),
@@ -598,7 +924,7 @@ function parseArgs(args) {
     pdfreactorUrl: `http://localhost:${process.env.PDFREACTOR_PORT || 9423}/service/rest/convert.pdf`,
     port: 4175,
     publicBase: 'public/exclude/web',
-    mode: 'content',
+    mode: '',
     noJs: false,
     output: '',
     skipBuild: false,
@@ -624,6 +950,15 @@ function parseArgs(args) {
     else if (arg === '--public-base') parsed.publicBase = args[++index] ?? parsed.publicBase
     else if (arg === '--source-dir') parsed.sourceDir = args[++index] ?? parsed.sourceDir
     else throw new Error(`Unknown argument: ${arg}`)
+  }
+
+  // Without --mode: the ns.wow document structure when the export has its routing, else plain articles
+  if (!parsed.mode) {
+    parsed.mode = existsSync(join(root, 'public', 'json', `routing_${parsed.lang}.json`)) ? 'export' : 'content'
+  }
+
+  if (!['content', 'export', 'components', 'file'].includes(parsed.mode)) {
+    throw new Error(`Unknown mode: ${parsed.mode}`)
   }
 
   return parsed
