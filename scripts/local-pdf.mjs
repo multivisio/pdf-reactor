@@ -56,13 +56,19 @@ async function runOnce() {
       await preflightDocument(`http://127.0.0.1:${port}${documentPath}`)
     }
 
-    console.log(`Rendering ${documentUrl}`)
+    // documentUrl is how the container reaches this machine, host.docker.internal does not
+    // resolve in the browser. localhost does, also from Windows into WSL
+    console.log(`Rendering ${documentPath}`)
     const pdf = await renderPdf(documentUrl)
     const outputFile = getOutputFile()
     await fs.writeFile(outputFile, pdf)
     console.log(`Wrote ${relative(root, outputFile)}`)
     if (options.watch) {
-      console.log(`Latest PDF URL: http://127.0.0.1:${port}/latest.pdf`)
+      console.log(`Document in the browser: http://localhost:${port}${documentPath}`)
+      console.log(`Latest PDF: http://localhost:${port}/latest.pdf`)
+    } else {
+      const documentFile = options.mode === 'export' ? `document-${options.lang}.html` : 'last-wrapper.html'
+      console.log(`HTML sent to PDFreactor: ${relative(root, join(outputDir, documentFile))} (to open it in the browser, use watch: the local server only runs while rendering)`)
     }
   } finally {
     running = false
@@ -875,10 +881,14 @@ function watchPaths() {
     ]
   }
 
+  if (options.mode === 'components') {
+    return [join(root, 'src'), join(root, 'livingdocs')]
+  }
+
   return [
     join(root, 'src'),
     join(root, 'livingdocs'),
-    join(root, 'public', 'pdf', 'html'),
+    join(root, options.sourceDir),
     join(root, 'public', 'pdf', 'web')
   ]
 }
