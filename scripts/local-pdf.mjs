@@ -97,19 +97,20 @@ async function renderPdf(documentUrl, attempt = 1) {
 
   const { response, responseBody } = await postWithoutTimeout(options.pdfreactorUrl, JSON.stringify(configuration))
 
+  // Under WSL a freshly opened port takes a moment to become reachable from Docker Desktop.
+  // PDFreactor 12 reports that as 422 "http host connect", older versions as HttpHostConnectException
+  if (attempt < 5 && /HttpHostConnectException|http host connect/i.test(responseBody.toString('utf8'))) {
+    console.log(`PDFreactor could not reach the local server yet, retrying (${attempt}/5)...`)
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 1000))
+    return renderPdf(documentUrl, attempt + 1)
+  }
+
   if (!response.ok) {
     const message = responseBody.toString('utf8')
     throw new Error(`PDFreactor failed with ${response.status}: ${message}`)
   }
 
   const pdf = extractPdfResponse(response, responseBody)
-
-  // Under WSL a freshly opened port takes a moment to become reachable from Docker Desktop
-  if (attempt < 5 && responseBody.toString('utf8').includes('HttpHostConnectException')) {
-    console.log(`PDFreactor could not reach the local server yet, retrying (${attempt}/5)...`)
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 1000))
-    return renderPdf(documentUrl, attempt + 1)
-  }
 
   if (!pdf.subarray(0, 5).equals(Buffer.from('%PDF-'))) {
     const debugFile = join(outputDir, 'last-pdfreactor-response.bin')
@@ -207,8 +208,13 @@ async function ensureServer() {
 
       await serveFile(url.pathname, response)
     } catch (error) {
+      // The server listens on all interfaces so the container can reach it,
+      // only local requests (the preflight) get the stack trace
+      console.error(error)
       response.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
-      response.end(error instanceof Error ? error.stack : String(error))
+      response.end(isLoopback(request.socket.remoteAddress)
+        ? (error instanceof Error ? error.stack : String(error))
+        : 'Internal server error')
     }
   })
 
@@ -462,7 +468,8 @@ async function serveFile(pathname, response) {
   const decodedPath = decodeURIComponent(pathname)
   const filePath = normalize(join(root, decodedPath))
 
-  if (!filePath.startsWith(root + sep)) {
+  if (!isServable(filePath)) {
+    console.warn(`Blocked request for ${decodedPath} (only .output, public, src, livingdocs and --public-base are served)`)
     response.writeHead(403)
     response.end('Forbidden')
     return
@@ -478,6 +485,26 @@ async function serveFile(pathname, response) {
 
   response.writeHead(200, { 'content-type': contentType(filePath) })
   createReadStream(filePath).pipe(response)
+}
+
+/*
+  Only the folders a rendered report loads from are served, so the rest of the project
+  (.env, .git, config files) stays private although the server listens on all interfaces.
+  Dot segments below these folders are blocked as well.
+*/
+function isServable(filePath) {
+  if (!filePath.startsWith(root + sep)) {
+    return false
+  }
+
+  const segments = relative(root, filePath).split(sep)
+  const allowed = new Set(['.output', 'public', 'src', 'livingdocs', options.publicBase.split(/[\\/]+/).filter(Boolean)[0]])
+
+  return allowed.has(segments[0]) && segments.slice(1).every((segment) => !segment.startsWith('.'))
+}
+
+function isLoopback(address = '') {
+  return address === '::1' || address === '127.0.0.1' || address === '::ffff:127.0.0.1'
 }
 
 function watchForChanges() {

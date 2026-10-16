@@ -14,7 +14,8 @@ services:
     volumes:
       - ../config:/ro/config
     ports:
-      - "${PDFREACTOR_PORT:-9423}:9423"
+      # Only reachable from this machine, otherwise anyone on the network could use it to fetch URLs
+      - "127.0.0.1:${PDFREACTOR_PORT:-9423}:9423"
     # Docker Desktop provides host.docker.internal itself, native Docker on Linux needs this entry
     extra_hosts:
       - "host.docker.internal:host-gateway"
