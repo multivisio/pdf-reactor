@@ -1,0 +1,21 @@
+services:
+  pdfreactor:
+    image: realobjects/pdfreactor:12.7.1
+    container_name: pdfreactor
+    user: pdfreactor
+    working_dir: /ro/PDFreactor/jetty-base-pdfreactor
+    environment:
+      JETTY_HOME: /ro/PDFreactor/jetty-home
+      JETTY_BASE: /ro/PDFreactor/jetty-base-pdfreactor
+      JAVA_HOME: /opt/java/openjdk
+      JAVA: /opt/java/openjdk/bin/java
+      # host.docker.internal also resolves to an IPv6 address, which is unreachable in the container
+      JAVA_TOOL_OPTIONS: -Djava.net.preferIPv4Stack=true
+    volumes:
+      - ../config:/ro/config
+    ports:
+      - "${PDFREACTOR_PORT:-9423}:9423"
+    # Docker Desktop provides host.docker.internal itself, native Docker on Linux needs this entry
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: "no"

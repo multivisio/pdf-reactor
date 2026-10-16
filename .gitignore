@@ -1,0 +1,3 @@
+config/licensekey.txt
+config/fonts/*
+!config/fonts/.gitkeep

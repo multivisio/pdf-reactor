@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# Manage the local PDFreactor web service (Docker container "pdfreactor").
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+COMPOSE_FILE="$ROOT/docker/docker-compose.yml"
+CONFIG_DIR="$ROOT/config"
+PROJECT="pdf-reactor"
+SERVICE="pdfreactor"
+CONTAINER="pdfreactor"
+PORT="${PDFREACTOR_PORT:-9423}"
+STATUS_URL="http://127.0.0.1:$PORT/service/rest/status"
+VERSION_URL="http://127.0.0.1:$PORT/service/rest/version"
+WAIT_SECONDS="${PDFREACTOR_WAIT:-60}"
+
+compose() {
+  docker compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"
+}
+
+info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33mwarn:\033[0m %s\n' "$*" >&2; }
+die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# A container with the same name from another compose project (e.g. the old location
+# under ~/projects) blocks this one and may still mount a stale config path
+remove_foreign_container() {
+  local config_files
+  config_files="$(docker inspect "$CONTAINER" --format '{{ index .Config.Labels "com.docker.compose.project.config_files" }}' 2>/dev/null)" || return 0
+  if [[ "$config_files" != "$COMPOSE_FILE" ]]; then
+    warn "removing container '$CONTAINER' from other setup (${config_files:-unknown})"
+    docker rm -f "$CONTAINER" >/dev/null
+  fi
+}
+
+check_config() {
+  [[ -f "$CONFIG_DIR/licensekey.txt" ]] || warn "no license key at $CONFIG_DIR/licensekey.txt (PDFreactor runs in evaluation mode)"
+}
+
+is_running() {
+  [[ "$(docker inspect "$CONTAINER" --format '{{.State.Running}}' 2>/dev/null)" == "true" ]]
+}
+
+is_ready() {
+  curl -fsS -o /dev/null --max-time 2 "$STATUS_URL" 2>/dev/null
+}
+
+wait_ready() {
+  info "waiting for PDFreactor on port $PORT"
+  local i
+  for ((i = 0; i < WAIT_SECONDS; i++)); do
+    if is_ready; then
+      info "ready: http://127.0.0.1:$PORT/service/rest ($(curl -fsS --max-time 2 "$VERSION_URL" 2>/dev/null | tr -d '\n' || echo '?'))"
+      return 0
+    fi
+    is_running || { compose logs --tail 30 "$SERVICE" >&2; die "container stopped while starting"; }
+    sleep 1
+  done
+  compose logs --tail 30 "$SERVICE" >&2
+  die "not ready after ${WAIT_SECONDS}s"
+}
+
+cmd_start() {
+  remove_foreign_container
+  check_config
+  info "starting"
+  compose up -d
+  wait_ready
+}
+
+cmd_stop() {
+  remove_foreign_container
+  info "stopping"
+  compose stop
+}
+
+cmd_down() {
+  remove_foreign_container
+  info "removing container"
+  compose down
+}
+
+cmd_restart() {
+  remove_foreign_container
+  info "restarting"
+  compose restart "$SERVICE" 2>/dev/null || compose up -d
+  wait_ready
+}
+
+# The web service reads pdfreactorwebservice.config, the license key and fonts only at startup,
+# so a reload recreates the container. That also applies changes to docker-compose.yml.
+cmd_reload() {
+  remove_foreign_container
+  check_config
+  info "reloading config from $CONFIG_DIR"
+  compose up -d --force-recreate
+  wait_ready
+}
+
+cmd_status() {
+  compose ps -a
+  echo
+  if is_ready; then
+    info "service ready on port $PORT"
+    curl -fsS --max-time 2 "$STATUS_URL" && echo
+  elif is_running; then
+    warn "container running, but service not (yet) ready on port $PORT"
+    return 1
+  else
+    warn "not running"
+    return 3
+  fi
+}
+
+cmd_logs() {
+  compose logs --tail "${PDFREACTOR_LOG_LINES:-100}" "$@" "$SERVICE"
+}
+
+cmd_update() {
+  info "pulling image"
+  compose pull
+  cmd_reload
+}
+
+cmd_edit() {
+  "${EDITOR:-vi}" "$CONFIG_DIR/pdfreactorwebservice.config"
+  if is_running; then
+    read -rp "reload now? [Y/n] " answer
+    [[ "${answer:-y}" =~ ^[Yy]$ ]] && cmd_reload
+  fi
+}
+
+# Renders the srl project in the current directory (or the nearest package.json above it)
+# through scripts/local-pdf.mjs. Paths in the options are relative to that project.
+cmd_pdf() {
+  command -v node >/dev/null || die "node not found"
+  if [[ " $* " != *" --pdfreactor-url "* ]] && ! is_ready; then
+    cmd_start >&2
+  fi
+  PDFREACTOR_PORT="$PORT" exec node "$ROOT/scripts/local-pdf.mjs" "$@"
+}
+
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") <command> [args]
+
+Commands:
+  start         start the container and wait until the service is ready
+  stop          stop the container
+  restart       restart the container (no config reload guarantee for compose changes)
+  reload        recreate the container to apply config, license key, fonts and compose changes
+  status        show container state and service status
+  logs [-f]     show logs (extra args go to 'docker compose logs')
+  shell         open a shell in the container
+  update        pull the image and reload
+  edit          edit pdfreactorwebservice.config, then optionally reload
+  down          stop and remove the container
+  path          print the pdf-reactor directory
+
+PDF commands (run inside an srl project, starts the service if needed):
+  pdf [options]         build-pdf, then render the report to .output/local-pdf/report.pdf
+  watch [options]       like pdf, re-renders on changes (latest PDF at http://127.0.0.1:4175/latest.pdf)
+  components [options]  render all livingdocs components to .output/local-pdf/components.pdf
+  file <path> [options] render a single HTML file to .output/local-pdf/generated.pdf
+
+PDF options (paths relative to the project root):
+  --skip-build          skip 'npm run build-pdf'
+  --lang <de>           language folder below the source dir
+  --source-dir <dir>    HTML source (default public/html, fallback public/pdf/web/html)
+  --config <xml>        PDFreactor config (default pdf/pdf-configuration-debug.xml)
+  --public-base <dir>   base for assets (default public/exclude/web)
+  --output <file>       output file instead of .output/local-pdf/...
+  --no-js               render without JavaScript (like the editor PDF preview)
+  --keep-file-assets    file mode: keep the file's own styles and scripts
+  --port <4175>         port of the local document server
+  --document-host <h>   host PDFreactor uses to reach it (default host.docker.internal)
+  --pdfreactor-url <u>  other PDFreactor service (skips the auto start)
+
+Paths:
+  compose: $COMPOSE_FILE
+  config:  $CONFIG_DIR (licensekey.txt, pdfreactorwebservice.config, fonts/)
+
+Env: PDFREACTOR_PROJECT_ROOT (project for pdf commands), PDFREACTOR_PORT (default 9423), PDFREACTOR_WAIT (default 60s), PDFREACTOR_LOG_LINES (default 100)
+EOF
+}
+
+command -v docker >/dev/null || die "docker not found"
+
+case "${1:-}" in
+  start) cmd_start ;;
+  stop) cmd_stop ;;
+  restart) cmd_restart ;;
+  reload) cmd_reload ;;
+  status) cmd_status ;;
+  logs) shift; cmd_logs "$@" ;;
+  shell) compose exec "$SERVICE" bash ;;
+  update) cmd_update ;;
+  edit) cmd_edit ;;
+  down) cmd_down ;;
+  path) echo "$ROOT" ;;
+  pdf) shift; cmd_pdf "$@" ;;
+  watch) shift; cmd_pdf --watch "$@" ;;
+  components) shift; cmd_pdf --mode components "$@" ;;
+  file)
+    shift
+    [[ -n "${1:-}" && "$1" != --* ]] || die "usage: $(basename "$0") file <path> [options]"
+    file="$1"; shift
+    cmd_pdf --mode file --file "$file" "$@"
+    ;;
+  -h | --help | help | "") usage ;;
+  *) usage >&2; exit 2 ;;
+esac
