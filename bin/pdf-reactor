@@ -168,18 +168,22 @@ Commands:
   path          print the pdf-reactor directory
 
 PDF commands (run inside an srl project, starts the service if needed):
-  pdf [options]         build-pdf, then render the report to .output/local-pdf/report.pdf
+  pdf [options]         build-pdf, then render the report to .output/pdf-reactor/report.pdf
   watch [options]       like pdf, re-renders on changes (latest PDF at http://127.0.0.1:4175/latest.pdf)
-  components [options]  render all livingdocs components to .output/local-pdf/components.pdf
-  file <path> [options] render a single HTML file to .output/local-pdf/generated.pdf
+  components [options]  render all livingdocs components to .output/pdf-reactor/components.pdf
+  file <path> [options] render a single HTML file to .output/pdf-reactor/generated.pdf
 
 PDF options (paths relative to the project root):
   --skip-build          skip 'npm run build-pdf'
+  --mode <m>            export: rebuild the ns.wow document from public/json + public/html
+                        (default if public/json/routing_<lang>.json exists), content: one
+                        <article> per file of the source dir
   --lang <de>           language folder below the source dir
-  --source-dir <dir>    HTML source (default public/html, fallback public/pdf/web/html)
+  --source-dir <dir>    HTML source, e.g. the raw ns.wow export (default public/html,
+                        fallback public/pdf/web/html)
   --config <xml>        PDFreactor config (default pdf/pdf-configuration-debug.xml)
-  --public-base <dir>   base for assets (default public/exclude/web)
-  --output <file>       output file instead of .output/local-pdf/...
+  --public-base <dir>   base for assets (default public/exclude/web, export mode: public)
+  --output <file>       output file instead of .output/pdf-reactor/...
   --no-js               render without JavaScript (like the editor PDF preview)
   --keep-file-assets    file mode: keep the file's own styles and scripts
   --port <4175>         port of the local document server

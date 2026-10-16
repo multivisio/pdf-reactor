@@ -91,14 +91,29 @@ Im Projektordner (oder einem Unterordner davon) ausführen:
 pdf-reactor pdf
 ```
 
-Der Befehl startet den PDFreactor-Container bei Bedarf selbst, führt `npm run build-pdf -- --no-clean` aus und schreibt das Ergebnis nach `.output/local-pdf/report.pdf`. Statt npm wird pnpm oder yarn verwendet, wenn das Projekt eine entsprechende Lockdatei hat.
+Der Befehl startet den PDFreactor-Container bei Bedarf selbst, führt `npm run build-pdf -- --no-clean` aus und schreibt das Ergebnis nach `.output/pdf-reactor/report.pdf`. Statt npm wird pnpm oder yarn verwendet, wenn das Projekt eine entsprechende Lockdatei hat.
 
 | Befehl | Ergebnis |
 |---|---|
-| `pdf-reactor pdf` | ganzer Bericht → `.output/local-pdf/report.pdf` |
-| `pdf-reactor watch` | wie `pdf`, rendert bei Änderungen in `src/`, `livingdocs/` und `public/pdf/` neu. Das aktuelle PDF liegt unter <http://127.0.0.1:4175/latest.pdf> |
-| `pdf-reactor components` | alle Livingdocs-Komponenten, je eine pro Seite → `.output/local-pdf/components.pdf` |
-| `pdf-reactor file <pfad>` | eine einzelne HTML-Datei → `.output/local-pdf/generated.pdf` |
+| `pdf-reactor pdf` | ganzer Bericht → `.output/pdf-reactor/report.pdf` |
+| `pdf-reactor watch` | wie `pdf`, rendert bei Änderungen in `src/`, `livingdocs/` und `public/pdf/` (Modus `export`: `public/html/`, `public/json/`) neu. Das aktuelle PDF liegt unter <http://127.0.0.1:4175/latest.pdf> |
+| `pdf-reactor components` | alle Livingdocs-Komponenten, je eine pro Seite → `.output/pdf-reactor/components.pdf` |
+| `pdf-reactor file <pfad>` | eine einzelne HTML-Datei → `.output/pdf-reactor/generated.pdf` |
+
+### Aufbau des Dokuments (`export` und `content`)
+
+Liegt im Projekt ein ns.wow-Export (`public/json/routing_<lang>.json`), baut `pdf` das Dokument so nach, wie ns.wow es an PDFreactor schickt (Modus `export`):
+
+- `body.pdf` mit dem Publikationstitel aus `settings.json` (`publicationName`)
+- liegt `public/json/pdf_structure.json` vor, kommen Kapitel, Artikel, Reihenfolge, Kategorien und Livingdocs-IDs daraus, auch für Kapitel ohne Menüeintrag (Cover, Inhaltsverzeichnis, Impressum). Die Kapitelnavigation bekommen nur Kapitel, deren Name zu einem Menüeintrag passt. Sonst gilt:
+- je Eintrag in `menu.menuMain` ein `div.srl-chapter` (Klasse aus dem Label in der Standardsprache, z. B. `srl-business-report`), darin je Seite ein `div.srl-article srl-<seitenname>` in Menü-Reihenfolge
+- ein Menüeintrag auf eine Kategorieseite (z. B. `notes_group`) steht für alle Seiten dieser Kategorie, sortiert nach Name, mit der Klasse `srl-category-<kategorieseite>`
+- Seiten mit `excludeFromPdf` fehlen, am Anfang jedes Kapitels steht die Kapitelnavigation (Running Header)
+- `pdf.css` und `pdf.js` stehen inline im `<head>`, Bilder kommen aus `public/images`
+- auf das Seiten-HTML werden die PDF-Regeln angewendet wie in ns.wow: `data-remove-from-pdf="complete"` entfernt das Element, `"transient"` behält nur den Inhalt, `data-replace-tag` benennt es um, Links auf andere Seiten zeigen auf den Anker im Dokument. Die Attribute der anderen Ausgaben (`data-remove-from-web`, `-word`, `-xhtml`) bleiben stehen
+- das fertige Dokument wird nach `.output/pdf-reactor/document-<lang>.html` geschrieben, PDFreactor lädt genau diese Datei. Im Terminal steht, wie viele Elemente entfernt, entpackt und umbenannt wurden
+
+Als Quelle eignen sich die Rohdaten aus ns.wow, in denen noch alle `data-remove-from-*` stehen (`--source-dir <ordner>` mit Unterordnern je Sprache). Der Web-Export in `public/html` enthält keine Elemente, die nur im PDF vorkommen (`data-remove-from-web` ist dort schon angewendet): Cover, Inhaltsverzeichnis, Kapitel-Cover, Impressum, Rückseite und reine PDF-Komponenten wie `srl-pdf-pagebreak` fehlen deshalb. Findet sich in der Quelle kein `data-remove-from-web`, warnt das Tool. Ohne Routing-Datei, oder mit `--mode content`, wird jede Datei aus `public/html/<lang>` nur in ein eigenes `<article>` gepackt.
 
 ### Optionen
 
@@ -107,10 +122,11 @@ Alle Pfade sind relativ zum Projektordner.
 | Option | Bedeutung | Standard |
 |---|---|---|
 | `--skip-build` | `build-pdf` überspringen, vorhandenen Build verwenden | |
+| `--mode <export\|content>` | Aufbau des Dokuments, siehe oben | `export`, wenn `public/json/routing_<lang>.json` existiert |
 | `--lang <code>` | Sprachordner unterhalb des HTML-Quellordners | `de` |
-| `--source-dir <dir>` | HTML-Quellordner | `public/html`, sonst `public/pdf/web/html` |
+| `--source-dir <dir>` | HTML-Quellordner, z. B. die Rohdaten aus ns.wow | `public/html`, sonst `public/pdf/web/html` |
 | `--config <xml>` | PDFreactor-Konfiguration | `pdf/pdf-configuration-debug.xml` |
-| `--public-base <dir>` | Basisordner für Assets (Bilder usw.) | `public/exclude/web` |
+| `--public-base <dir>` | Basisordner für Assets (Bilder usw.), nicht im Modus `export` (dort immer `public`) | `public/exclude/web` |
 | `--output <datei>` | anderer Ausgabepfad | |
 | `--no-js` | ohne JavaScript rendern (wie die PDF-Vorschau im Editor) | |
 | `--keep-file-assets` | nur `file`: eigene Styles und Scripts der Datei behalten | |
@@ -122,6 +138,12 @@ Beispiele:
 
 ```bash
 pdf-reactor pdf --skip-build --lang en
+```
+
+So wie in Produktion, ohne angehängtes Log:
+
+```bash
+pdf-reactor pdf --lang en --config pdf/pdf-configuration.xml
 ```
 
 ```bash
@@ -178,5 +200,5 @@ Schriften kommen ausschließlich aus dem jeweiligen Projekt. `build-pdf` legt si
 - **macOS fragt, ob `node` eingehende Verbindungen annehmen darf:** erlauben. PDFreactor im Container holt das Dokument über diesen Port vom lokalen Server.
 - **PDFreactor erreicht den lokalen Server nicht:** Unter WSL ist ein neu geöffneter Port kurz nicht erreichbar, das Tool versucht es deshalb bis zu fünfmal. Hilft das nicht, Firewall und `--document-host` prüfen.
 - **Bilder oder Styles fehlen, im Terminal steht „Blocked request for …“:** Der lokale Server liefert nur Dateien aus `.output`, `public`, `src`, `livingdocs` und dem Ordner von `--public-base` aus, damit der Rest des Projekts (z. B. `.env`, `.git`) im Netzwerk nicht abrufbar ist. Assets dort ablegen oder `--public-base` anpassen.
-- **PDF sieht falsch aus:** `.output/local-pdf/last-wrapper.html` enthält das HTML, das an PDFreactor ging. Ist die Antwort kein PDF, liegt sie in `.output/local-pdf/last-pdfreactor-response.bin`. Zusätzlich `pdf-reactor logs` ansehen.
+- **PDF sieht falsch aus:** `.output/pdf-reactor/document-<lang>.html` (Modus `export`) bzw. `last-wrapper.html` enthält das HTML, das an PDFreactor ging. Ist die Antwort kein PDF, liegt sie in `.output/pdf-reactor/last-pdfreactor-response.bin`. Zusätzlich `pdf-reactor logs` ansehen.
 - **Warnung „removing container 'pdfreactor' from other setup“:** Ein Container gleichen Namens aus einer anderen Installation wurde entfernt. Das ist gewollt.
