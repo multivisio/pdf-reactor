@@ -100,6 +100,22 @@ Der Befehl startet den PDFreactor-Container bei Bedarf selbst, führt `npm run b
 | `pdf-reactor components` | alle Livingdocs-Komponenten, je eine pro Seite → `.output/pdf-reactor/components.pdf` |
 | `pdf-reactor file <pfad>` | eine einzelne HTML-Datei → `.output/pdf-reactor/generated.pdf` |
 
+### Kunden-Overlays (`--customer`)
+
+Projekte mit einer gemeinsamen Base und Kunden-Overlays unter `pdf/customers/nspXXX-<name>/` (z. B. `nsfd_report-standard-customer`) rendern ein Kunden-PDF so, wie ns.wow es zusammensetzt:
+
+```bash
+pdf-reactor pdf --customer nsp281-greiner
+```
+
+- Eingabe ist der ns.wow-Export des Kunden als `pdf/customers/<ordner>/pdf.html` (im Projekt per `.gitignore` ausgeschlossen, das sind Kundendaten). Ohne `--mode` läuft dafür der Modus `file`; fehlt die Datei, bricht das Tool mit einem Hinweis ab. Mit `--file` geht auch ein anderer Export.
+- Der Build läuft als `npm run build-pdf -- --no-clean --customer <ordner>`. Das Projekt braucht dafür `"build-pdf": "srl build -t pdf"`.
+- Nach `pdf.css`/`pdf.js` kommen die Kunden-Dateien in den `<head>`, in der Reihenfolge der `.output/ldd/pdf/<nspXXX>/pdf-configuration.xml` aus dem Build (`custom.css`, `custom.js`, Dateien aus `public/`). Sie werden aus `.output/ldd/pdf/` ausgeliefert, relative URLs für Schriften und Assets funktionieren also wie in ns.wow.
+- Das PDF heißt wie der Kundenordner: `.output/pdf-reactor/<ordner>.pdf`, in den anderen Modi `<ordner>-components.pdf` bzw. `<ordner>-report.pdf`.
+- `watch` beobachtet zusätzlich den Kundenordner.
+- Statt des vollen Ordnernamens reicht das Präfix: `--customer nsp281`.
+- `--mode components` rendert alle Komponenten mit den Kunden-Styles, auch ohne Export.
+
 ### Aufbau des Dokuments (`export` und `content`)
 
 Liegt im Projekt ein ns.wow-Export (`public/json/routing_<lang>.json`), baut `pdf` das Dokument so nach, wie ns.wow es an PDFreactor schickt (Modus `export`):
@@ -122,6 +138,7 @@ Alle Pfade sind relativ zum Projektordner.
 | Option | Bedeutung | Standard |
 |---|---|---|
 | `--skip-build` | `build-pdf` überspringen, vorhandenen Build verwenden | |
+| `--customer <ordner>` | Kunden-Overlay aus `pdf/customers/`, siehe oben | |
 | `--mode <export\|content>` | Aufbau des Dokuments, siehe oben | `export`, wenn `public/json/routing_<lang>.json` existiert |
 | `--lang <code>` | Sprachordner unterhalb des HTML-Quellordners | `de` |
 | `--source-dir <dir>` | HTML-Quellordner, z. B. die Rohdaten aus ns.wow | `public/html`, sonst `public/pdf/web/html` |

@@ -1,7 +1,7 @@
 import { createServer, request as httpRequest } from 'node:http'
-import { createReadStream, existsSync, promises as fs, statSync } from 'node:fs'
+import { createReadStream, existsSync, promises as fs, readdirSync, statSync } from 'node:fs'
 import { watch } from 'node:fs'
-import { dirname, extname, join, normalize, relative, resolve, sep } from 'node:path'
+import { basename, dirname, extname, join, normalize, relative, resolve, sep } from 'node:path'
 import { spawn } from 'node:child_process'
 
 const root = findProjectRoot()
@@ -41,7 +41,8 @@ async function runOnce() {
     if (!options.skipBuild) {
       // build-pdf also writes the project fonts to .output/fonts. --no-clean keeps the rest of
       // .output (design.zip, pdf-configuration.xml of the last full build, earlier local PDFs)
-      await runCommand(packageManager.command, [...packageManager.args, 'run', 'build-pdf', '--', '--no-clean'])
+      const customerArgs = options.customer ? ['--customer', options.customer] : []
+      await runCommand(packageManager.command, [...packageManager.args, 'run', 'build-pdf', '--', '--no-clean', ...customerArgs])
     }
 
     await fs.mkdir(outputDir, { recursive: true })
@@ -250,7 +251,7 @@ async function servePdf(filePath, response) {
 
   response.writeHead(200, {
     'cache-control': 'no-store',
-    'content-disposition': `inline; filename="${options.mode === 'file' ? 'generated.pdf' : 'report.pdf'}"`,
+    'content-disposition': `inline; filename="${basename(filePath)}"`,
     'content-type': 'application/pdf'
   })
   createReadStream(filePath).pipe(response)
@@ -258,12 +259,13 @@ async function servePdf(filePath, response) {
 
 async function buildHtml(lang) {
   const fontLink = fontStylesheetLink()
+  const customerAssets = await customerHeadAssets()
   if (options.mode === 'file') {
-    return buildSingleFileHtml(fontLink)
+    return buildSingleFileHtml(fontLink, customerAssets)
   }
 
   if (options.mode === 'export') {
-    return buildExportHtml(lang, fontLink)
+    return buildExportHtml(lang, fontLink, customerAssets)
   }
 
   const content = options.mode === 'components'
@@ -281,6 +283,7 @@ ${galleryCss()}
   ${fontLink}
   <link rel="stylesheet" href="/.output/pdf/pdf.css">
   <script src="/.output/pdf/pdf.js" defer></script>
+  ${customerAssets}
   <title>Local PDF</title>
 </head>
 <body>
@@ -325,7 +328,7 @@ async function resolveSourceDir(lang) {
   data-remove-from-* still in it) or the web version (data-remove-from-web already applied, so
   PDF-only components are missing). Either way the pdf rules are applied here.
 */
-async function buildExportHtml(lang, fontLink) {
+async function buildExportHtml(lang, fontLink, customerAssets = '') {
   const structure = await readExportStructure(lang)
   const htmlDir = await resolveSourceDir(lang)
   const articleIds = new Map(structure.chapters.flatMap((chapter) => chapter.articles).map((article) => [article.page.uuid, articleId(article)]))
@@ -354,7 +357,7 @@ async function buildExportHtml(lang, fontLink) {
   ])
 
   // No doctype and the script in the head, like the ns.wow export
-  return `<html lang="${escapeHtml(lang)}"><head><meta charset="UTF-8" /><base href="/public/">${fontLink}<style>${css}</style><script>${js}</script><title>${escapeHtml(structure.title)}</title></head><body class="pdf"><p class='srl-pdf-publication-title lc-pdf-publication-title'><span class='srl-pdf-publication-title__text lc-pdf-publication-title__text'>${escapeHtml(structure.title)}</span></p>${chapters.join('')}</body></html>`
+  return `<html lang="${escapeHtml(lang)}"><head><meta charset="UTF-8" /><base href="/public/">${fontLink}<style>${css}</style><script>${js}</script>${customerAssets}<title>${escapeHtml(structure.title)}</title></head><body class="pdf"><p class='srl-pdf-publication-title lc-pdf-publication-title'><span class='srl-pdf-publication-title__text lc-pdf-publication-title__text'>${escapeHtml(structure.title)}</span></p>${chapters.join('')}</body></html>`
 }
 
 /*
@@ -363,7 +366,7 @@ async function buildExportHtml(lang, fontLink) {
 */
 async function writeExportDocument(lang) {
   const file = join(outputDir, `document-${lang}.html`)
-  await fs.writeFile(file, await buildExportHtml(lang, fontStylesheetLink()))
+  await fs.writeFile(file, await buildExportHtml(lang, fontStylesheetLink(), await customerHeadAssets()))
   console.log(`Wrote ${relative(root, file)}`)
   return `/${toUrlPath(relative(root, file))}`
 }
@@ -602,12 +605,12 @@ async function readJson(path) {
   return JSON.parse(await fs.readFile(path, 'utf8'))
 }
 
-async function buildSingleFileHtml(fontLink) {
+async function buildSingleFileHtml(fontLink, customerAssets = '') {
   const html = await rewriteImageUrls(await fs.readFile(join(root, options.file), 'utf8'))
   const headAssets = `<base href="/${toUrlPath(options.publicBase)}/">
 ${fontLink}
 <link rel="stylesheet" href="/.output/pdf/pdf.css">
-<script src="/.output/pdf/pdf.js" defer></script>`
+<script src="/.output/pdf/pdf.js" defer></script>${customerAssets ? `\n${customerAssets}` : ''}`
   const cleanHtml = options.keepFileAssets
     ? html
     : html
@@ -838,6 +841,11 @@ function watchForChanges() {
 }
 
 function watchPaths() {
+  const customerPaths = options.customer ? [join(root, 'pdf', 'customers', options.customer)] : []
+  return [...modeWatchPaths(), ...customerPaths]
+}
+
+function modeWatchPaths() {
   if (options.mode === 'file') {
     return [
       join(root, options.file),
@@ -902,6 +910,7 @@ function runCommand(command, args) {
 function parseArgs(args) {
   const parsed = {
     config: 'pdf/pdf-configuration-debug.xml',
+    customer: '',
     documentHost: 'host.docker.internal',
     file: 'public/exclude/generated.html',
     keepFileAssets: false,
@@ -917,11 +926,17 @@ function parseArgs(args) {
     watch: false
   }
 
+  let fileGiven = false
+
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
 
     if (arg === '--config') parsed.config = args[++index] ?? parsed.config
-    else if (arg === '--file') parsed.file = args[++index] ?? parsed.file
+    else if (arg === '--customer') parsed.customer = args[++index] ?? parsed.customer
+    else if (arg === '--file') {
+      parsed.file = args[++index] ?? parsed.file
+      fileGiven = true
+    }
     else if (arg === '--keep-file-assets') parsed.keepFileAssets = true
     else if (arg === '--watch') parsed.watch = true
     else if (arg === '--skip-build') parsed.skipBuild = true
@@ -935,6 +950,23 @@ function parseArgs(args) {
     else if (arg === '--public-base') parsed.publicBase = args[++index] ?? parsed.publicBase
     else if (arg === '--source-dir') parsed.sourceDir = args[++index] ?? parsed.sourceDir
     else throw new Error(`Unknown argument: ${arg}`)
+  }
+
+  if (parsed.customer) {
+    parsed.customer = resolveCustomer(parsed.customer)
+
+    // A customer renders its own ns.wow export, stored next to its overlay (gitignored there)
+    if (!parsed.mode) {
+      parsed.mode = 'file'
+    }
+
+    if (parsed.mode === 'file' && !fileGiven) {
+      parsed.file = join('pdf', 'customers', parsed.customer, 'pdf.html')
+
+      if (!existsSync(join(root, parsed.file))) {
+        throw new Error(`No ns.wow export for ${parsed.customer}: save the PDF HTML from ns.wow as ${parsed.file}, or render all components with the customer styles via --mode components`)
+      }
+    }
   }
 
   // Without --mode: the ns.wow document structure when the export has its routing, else plain articles
@@ -996,6 +1028,11 @@ function getOutputFile() {
     : options.mode === 'file'
       ? 'generated.pdf'
       : 'report.pdf'
+
+  if (options.customer) {
+    return join(outputDir, options.mode === 'file' ? `${options.customer}.pdf` : `${options.customer}-${filename}`)
+  }
+
   return join(outputDir, filename)
 }
 
@@ -1034,6 +1071,56 @@ function readXmlBoolean(xml, element, assign, childElement = '') {
   if (match) {
     assign(match[1].toLowerCase() === 'true')
   }
+}
+
+/*
+  Customer overlays (pdf/customers/nspXXX-<name>/, e.g. in nsfd_report-standard-customer): the
+  folder name or just its nsp prefix. Without that folder the project has no customer builds.
+*/
+function resolveCustomer(name) {
+  const customersDir = join(root, 'pdf', 'customers')
+  const folders = existsSync(customersDir)
+    ? readdirSync(customersDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name)
+    : []
+  const folder = folders.find((entry) => entry === name) ?? folders.find((entry) => entry.split('-')[0] === name)
+
+  if (!folder) {
+    throw new Error(`Unknown customer ${JSON.stringify(name)}, expected a folder in ${relative(root, customersDir)}: ${folders.join(', ') || 'none'}`)
+  }
+
+  return folder
+}
+
+/*
+  The tags ns.wow adds for a customer, in the order of the pdf-configuration.xml that
+  'srl build -t pdf --customer' writes to .output/ldd/pdf/<nspXXX>/. The base pdf.css and pdf.js
+  are already in the head, everything else (custom.css, custom.js, files from public/) is served
+  from .output/ldd/pdf/, so relative URLs in custom.css (fonts, assets) resolve like in ns.wow.
+*/
+async function customerHeadAssets() {
+  if (!options.customer) {
+    return ''
+  }
+
+  const customerId = options.customer.split('-')[0]
+  const configPath = join(root, '.output', 'ldd', 'pdf', customerId, 'pdf-configuration.xml')
+  const xml = await fs.readFile(configPath, 'utf8').catch(() => {
+    throw new Error(`Could not find ${relative(root, configPath)}, run the build without --skip-build first`)
+  })
+  const tags = []
+
+  for (const [, type, uri] of xml.matchAll(/<(userStyleSheets|userScripts)>[\s\S]*?<uri>\s*([^<\s]+)\s*<\/uri>[\s\S]*?<\/\1>/g)) {
+    const path = uri.match(/\/pdf\/(.+)$/)?.[1]
+
+    if (!path || path === 'pdf.css' || path === 'pdf.js') {
+      continue
+    }
+
+    const href = `/.output/ldd/pdf/${path}`
+    tags.push(type === 'userStyleSheets' ? `<link rel="stylesheet" href="${href}">` : `<script src="${href}" defer></script>`)
+  }
+
+  return tags.join('\n')
 }
 
 function fontStylesheetLink() {

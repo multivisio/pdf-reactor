@@ -176,6 +176,9 @@ PDF commands (run inside an srl project, starts the service if needed):
 
 PDF options (paths relative to the project root):
   --skip-build          skip 'npm run build-pdf'
+  --customer <folder>   customer overlay from pdf/customers/ (e.g. nsp281-greiner): renders
+                        pdf/customers/<folder>/pdf.html with its custom.css/js to
+                        .output/pdf-reactor/<folder>.pdf
   --mode <m>            export: rebuild the ns.wow document from public/json + public/html
                         (default if public/json/routing_<lang>.json exists), content: one
                         <article> per file of the source dir
