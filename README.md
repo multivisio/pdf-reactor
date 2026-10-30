@@ -146,7 +146,7 @@ Alle Pfade sind relativ zum Projektordner.
 | `--public-base <dir>` | Basisordner für Assets (Bilder usw.), nicht im Modus `export` (dort immer `public`) | `public/exclude/web` |
 | `--output <datei>` | anderer Ausgabepfad | |
 | `--no-js` | ohne JavaScript rendern (wie die PDF-Vorschau im Editor) | |
-| `--keep-file-assets` | nur `file`: eigene Styles und Scripts der Datei behalten | |
+| `--keep-file-assets` | nur `file`: auch die Styles und Scripts im `<head>` der Datei behalten (Styles im Body, z. B. die Tabellen-Spaltenbreiten aus ns.wow, bleiben immer erhalten) | |
 | `--port <port>` | Port des lokalen Dokumentservers | `4175` |
 | `--document-host <host>` | Host, über den PDFreactor den lokalen Server erreicht | `host.docker.internal` |
 | `--pdfreactor-url <url>` | anderen PDFreactor-Service verwenden (kein Autostart) | |
