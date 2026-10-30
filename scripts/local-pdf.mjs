@@ -611,12 +611,14 @@ async function buildSingleFileHtml(fontLink, customerAssets = '') {
 ${fontLink}
 <link rel="stylesheet" href="/.output/pdf/pdf.css">
 <script src="/.output/pdf/pdf.js" defer></script>${customerAssets ? `\n${customerAssets}` : ''}`
+  // Only the head assets are replaced by the project's: style blocks in the body belong to the content (ns.wow
+  // exports the column widths of every table as srl-table-tabXXX-colN in %) and the PDF keeps them as well
   const cleanHtml = options.keepFileAssets
     ? html
-    : html
+    : html.replace(/<head\b[^>]*>[\s\S]*?<\/head>/i, (head) => head
       .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
       .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
-      .replace(/<link\b[^>]*rel=["']?stylesheet["']?[^>]*>/gi, '')
+      .replace(/<link\b[^>]*rel=["']?stylesheet["']?[^>]*>/gi, ''))
 
   if (/<head\b[^>]*>/i.test(cleanHtml)) {
     return cleanHtml.replace(/<head\b([^>]*)>/i, `<head$1>\n${headAssets}`)
